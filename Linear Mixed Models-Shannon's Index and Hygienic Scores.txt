@@ -1,0 +1,155 @@
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/sophie/Desktop") #set working directory
+
+#load required packages and files
+library(rstatix)
+library(lme4)
+library (lmerTest) #for linear mixed effect model
+library(performance) #for conditional and marginal r2 values
+library(readxl)
+Shan <-read_excel("Sequencing Data/Shannon's Index.xlsx") 
+
+#convert variables to factors 
+Shan$Treatment <- as.factor(Shan$Treatment) 
+Shan$Week <- as.factor(Shan$Week) 
+Shan$Treatment <- as.factor(Shan$Treatment) 
+Shan$Hive <- as.factor(Shan$Hive) 
+Shan$Replicate <- as.factor(Shan$Replicate) 
+str(Shan)
+
+#summary statistics for Shannon Scores 
+Shan %>%
+  group_by(Treatment) %>%
+  get_summary_stats(Shannon, type = "mean_sd")
+  
+  #LMM code with just Hive  
+RMSh <- lmer (Shannon ~ Treatment + Week + Treatment:Week + (1|Hive) , data = Shan)
+anova(RMSh)
+
+#model summary
+summary(RMSh)
+
+#95% confidence intervals
+confint(RMSh, level=0.95)
+
+#conditional and marginal R2 values
+r2_nakagawa(RMSh)
+
+#model coefficients 
+coef(RMSh)
+
+#LMM code with nested replicates
+RMS <- lmer (Shannon ~ Treatment + Week + Treatment:Week + (1|Hive:Replicate) , data = Shan)
+anova(RMS)
+
+#model summary
+summary(RMS) 
+
+#95% confidence intervals
+confint(RMS, level=0.95)
+
+#conditional and marginal R2 values
+r2_nakagawa(RMS)
+
+coef(RMS)
+
+### Checking the assumptions on the residuals
+
+#do residuals follo an approximately normal distribution
+plot(density(res_RMS)) 
+
+#homogeneity of variance
+plot(fitted(RMS), res_RMS)
+abline(0,0)
+
+fit_RMS <- fitted(RMS)
+plot((fit_RMS), (res_RMS))
+
+
+## LMM for hygiene
+
+#load required packages and files
+library(lme4)
+library (lmerTest) #for linear mixed effect model
+library(performance) #for conditional and marginal r2 values
+library(readxl)
+HyC <- read_excel("Behavioural Stats/Hygiene_Collar.xlsx")
+#View(Hygiene_Collar)
+
+#convert variables from numerical to factor where appropriate
+HyC$Week <- as.factor(HyC$Week) 
+HyC$Treatment <- as.factor(HyC$Treatment) 
+HyC$Hive <- as.factor(HyC$Hive) 
+HyC$Collar <- as.factor(HyC$Collar) 
+str(HyC)
+
+#summary statistics for Hygiene Scores 
+HyC %>%
+  group_by(Treatment) %>%
+  get_summary_stats(Hygiene, type = "mean_sd")
+
+#LMM code with just hive 
+RMCh <- lmer (Hygiene ~ Treatment + Week + Treatment:Week + (1|Hive) , data = HyC)
+anova(RMCh)
+
+#model summary 
+summary(RMCh)
+
+#95% confidence intervals 
+confint(RMCh, level=0.95)
+
+#conditional and marginal R2 values
+r2_nakagawa(RMCh)
+
+#model coefficients
+coef(RMCh)
+
+#LMM code with collar nested 
+RMC <- lmer (Hygiene ~ Treatment + Week + Treatment:Week + (1|Hive:Collar) , data = HyC)
+anova(RMC)
+
+#model summary
+summary(RMC)
+
+#95% confidence interval 
+confint(RMC, level=0.95)
+
+#conditional and marginal R2 values
+r2_nakagawa(RMC)
+
+#model coefficients 
+coef(RMC)
+
+
+### Checking the assumptions on the residuals
+
+#normality
+res_RMC <- residuals(RMC)
+qqnorm(res_RMC)
+
+#do residuals follow an approximately normal distribution
+plot(density(res_RMC))
+
+#homogeneity of variance
+plot(fitted(RMC), res_RMC)
+abline(0,0)
+
+#plotting residuals vs response variable
+plot((res_RMC),HyC$Hygiene)
+
+#plotting residuals against fitted values
+fit_RMC <- fitted(RMC)
+plot((fit_RMC), (res_RMC))
+
+
+
+
+
+
+
+
+
+
+
+
+
