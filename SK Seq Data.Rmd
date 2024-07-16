@@ -1,0 +1,522 @@
+---
+title: "SK Seq Data"
+author: "Sophie Killam"
+date: "2023-11-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(devtools)
+library(githubinstall)
+library(eoffice) #for making plots, use function topptx
+setwd("/Users/sophie/Desktop/Sequencing Data")
+```
+
+
+## Filter and PCA 
+
+```{r}
+#basic principle component analysis that shows each sample and replicates 
+
+library(zCompositions) # CZM
+
+library(dplyr) # Pipe
+
+#### Load data ####
+
+counts <- read.table("filtered_data.txt", 
+                     header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                     quote = "", stringsAsFactors = FALSE)
+tax <- read.table("cutadapt_tax.txt", 
+                  header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                  quote = "", stringsAsFactors = FALSE)
+
+#### #load meta data table
+
+metadata<-read.table("metadata.txt", header=TRUE, row.names = 1, sep="\t", quote="")
+
+#### Filter ####
+
+# Summarize input counts table
+sum(counts) ; dim(counts) ; summary(colSums(counts)) ; summary(rowSums(counts))
+
+# Generate a relative abundance table and remove SVs accounting for < 1% of reads in every sample
+# If you care about very rare things you could lower this to 0.1% (0.001)
+props <- apply(counts, 1, function(x) {x/sum(x)})
+filt_by_props <- counts[, apply(props, 1, max) >= 0.01] 
+# Summarize output filtered counts table
+sum(filt_by_props) ; dim(filt_by_props) ; summary(colSums(filt_by_props)) ; summary(rowSums(filt_by_props))
+
+# Create filtered data frames
+filtered_counts <- counts[rownames(filt_by_props), colnames(filt_by_props)]
+filtered_tax <- tax[colnames(filt_by_props), ]
+filtered_meta <- metadata[rownames(filt_by_props), ]
+
+# Can't have zeroes for downstream steps, impute them to something else logically
+# Handle this problem using cmultRepl in zCompositions package
+# Bayesian-Multiplicative replacement of count zeros
+# method="CZM" uses multiplicative simple replacement (multRepl) on the matrix of estimated probabilities
+# samples as rows 
+czm <- cmultRepl(filtered_counts, label = 0, method = "CZM")
+#CLR transform the data
+clr <- t(apply(czm, 1, function(x) {log(x) - mean(log(x))} ))
+
+# The output will have samples as ROWS
+# Samples must be ROWs and features/OTUs as COLUMNS
+# base R function to perform principal component analysis
+pca <- prcomp(clr)
+
+d.mvar <- sum(pca$sdev^2)
+
+# Calculate the PC1 and PC2 variance
+PC1 <- paste("PC1: ", round(sum(pca$sdev[1]^2)/d.mvar, 3))
+PC2 <- paste("PC2: ", round(sum(pca$sdev[2]^2)/d.mvar, 3))
+biplot(pca, var.axes=T, scale=0, xlab=PC1, ylab=PC2, cex=c(0.6, 0.6))
+
+# Beta diversity
+# Compute Aitchison distances
+aitch_dists <- as.matrix(dist(clr))
+write.table(aitch_dists, file="aitchdist_filtered.txt", sep="\t", quote=F)
+```
+
+## Phyloseq Alpha Diversity
+ 
+*Do not do based on filtered data 
+ 
+```{r}
+#alpha diversity metrics in phyloseq. This will create a file of alpha diversity metrics. I used Shannon's diversity moving forward with my analysis. 
+
+#perform on dataset that isn't heavily filtered for max accuracy of all the metrics
+
+#githubinstall("phyloseq")
+#githubinstall("microbiome")
+
+library(phyloseq)
+
+library(dplyr)
+
+library(microbiome)
+
+#build phyloseq object from untrimmed counts file
+dm<-read.table("cutadapt_counts.txt", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+
+tax<-read.table("cutadapt_tax.txt", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+#from dyplyr, remove sequence column
+tax<-select(tax, -Sequence)
+tax<-as.matrix(tax) 
+
+OTU = otu_table(dm, taxa_are_rows = FALSE)
+TAX = tax_table(tax)
+
+meta<-read.table("metadata.txt", sep="\t", quote="", check.names=F, header=T, row.names=1, comment.char="")
+sampledata = sample_data(meta)
+
+physeq = phyloseq(OTU, TAX, sampledata)
+physeq
+# phyloseq-class experiment-level object
+
+
+#calculate alpha diversity for each individual sample
+#measures = NULL means all measures will be calculated (shannon's, chao1, simpson, etc)
+div<- estimate_richness(physeq, split = TRUE, measures = NULL)
+
+#from microbiome R package, calculate the Berger-Parker dominance index
+dom<- dominance(physeq,  relative = TRUE, aggregate = FALSE)
+
+#merge the data
+div_all <- data.frame(div, dom)
+# Write out the file
+#import the "type" column to sort samples in graphpad
+write.table(div_all, file="alpha_diversity_phyloseq.txt", sep="\t")
+
+```
+
+
+## Coloured biplot
+
+```{r}
+
+#biplot by treatment. A more complex PCA plot that shows treatment and SVs. 
+
+library(zCompositions) # CZM
+library(dplyr)
+library(tibble)
+library(ggplot2)
+
+#### Load data ####
+
+counts <- read.table("cutadapt_counts.txt", 
+                     header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                     quote = "", stringsAsFactors = FALSE)
+tax <- read.table("cutadapt_tax.txt", 
+                  header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                  quote = "", stringsAsFactors = FALSE)
+
+#### #load meta data table
+
+metadata<-read.table("metadata.txt", header=T, row.names = 1, sep='\t', comment.char = "")
+metadata<-tibble::rownames_to_column(metadata, "Sample_ID")
+
+#### Filter ####
+
+# Summarize input counts table
+sum(counts) ; dim(counts) ; summary(colSums(counts)) ; summary(rowSums(counts))
+
+# Generate a relative abundance table and remove SVs accounting for < 1% of reads in every sample
+# If you care about very rare things you could lower this to 0.1% (0.001)
+props <- apply(counts, 1, function(x) {x/sum(x)})
+filt_by_props <- counts[, apply(props, 1, max) >= 0.01] 
+
+# Summarize output filtered counts table
+sum(filt_by_props) ; dim(filt_by_props) ; summary(colSums(filt_by_props)) ; summary(rowSums(filt_by_props))
+
+# Create filtered data frames
+filtered_counts <- counts[rownames(filt_by_props), colnames(filt_by_props)]
+filtered_tax <- tax[colnames(filt_by_props), ]
+filtered_meta <- metadata[rownames(filt_by_props), ]
+
+# Can't have zeroes for downstream steps, impute them to something else logically
+# Handle this problem using cmultRepl in zCompositions package
+# Bayesian-Multiplicative replacement of count zeros
+# method="CZM" uses multiplicative simple replacement (multRepl) on the matrix of estimated probabilities
+# samples as rows 
+czm <- cmultRepl(filtered_counts, label = 0, method = "CZM")
+
+#CLR transform the data
+clr <- t(apply(czm, 1, function(x) {log(x) - mean(log(x))} ))
+
+# The output will have samples as ROWS
+# Samples must be ROWs and features/OTUs as COLUMNS
+# base R function to perform principal component analysis
+d.pcx <- prcomp(clr)
+
+d.mvar <- sum(d.pcx$sdev^2)
+
+# Calculate the PC1 and PC2 variance
+PC1 <- paste("PC1: ", round(sum(d.pcx$sdev[1]^2)/d.mvar, 3))
+PC2 <- paste("PC2: ", round(sum(d.pcx$sdev[2]^2)/d.mvar, 3))
+
+
+#make actual plot. To switch whether this is based on week or treatment, simply switch the commented out rows for the non-commented out rows (i.e. switch cols <- for shapes <- and values$Week for values$Treatment)             
+
+loadings<- data.frame(Variables=rownames(d.pcx$rotation), d.pcx$rotation)
+values<-merge(d.pcx$x[,c(1,2)], metadata[,c("Sample_ID","Week")],
+                      by.x="row.names", by.y="Sample_ID", all=F)
+ 
+values$Week<-factor(values$Week, levels=c("1","2", "3"))
+#values$Treatment<-factor(values$Treatment, levels=c("bif","veh", "lac"))
+
+theme_new <- theme_set(theme_bw())
+cols <- c("1" = "#03314B", "2" = "#F38992", "3" = "green3")
+#shapes <- c("bif" = "1", "veh" = "16", "lac" = "21")
+
+ggplot(values, aes(x = PC1, y = PC2)) +
+geom_segment(data = loadings, aes(x = 0, y = 0, xend = (PC1*80), yend = (PC2*80)),
+               arrow = arrow(length = unit(5/20, "picas")),
+               color = "darkgrey",
+               inherit.aes = FALSE, size=0.3) +
+geom_point(data = values, aes(color=Week)) + 
+
+scale_color_manual(values = cols) +
+guides(fill = guide_legend(override.aes=list(shape=3)))+
+annotate("text", x = (loadings$PC1*80), y = (loadings$PC2*80), label = loadings$Variables, size=2) +
+stat_ellipse(aes(x = PC1, y = PC2, colour=Week), data = values, geom = "path", position = "identity", na.rm = FALSE, show.legend = NA, inherit.aes = FALSE) +
+xlab(paste0("PC1: ", round(100*(d.pcx$sdev[1]^2/sum(d.pcx$sdev^2)),1),"%")) +
+ylab(paste0("PC2: ", round(100*(d.pcx$sdev[2]^2/sum(d.pcx$sdev^2)),1),"%")) +
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+```{r}
+###Biplot of PCA that shows both week and treatment at the same time
+
+loadings<- data.frame(Variables=rownames(d.pcx$rotation), d.pcx$rotation)
+values<-merge(d.pcx$x[,c(1,2)], metadata[,c("Sample_ID","Week", "Treatment")],
+                      by.x="row.names", by.y="Sample_ID", all=F)
+ 
+values$Week<-factor(values$Week, levels=c("1","2", "3"))
+values$Treatment<-factor(values$Treatment, levels=c("bif","veh", "lac"))
+
+theme_new <- theme_set(theme_bw())
+cols <- c("1" = "#03314B", "2" = "#F38992", "3" = "green3")
+shapes <- c("bif" = "1", "veh" = "16", "lac" = "21")
+
+ggplot(values, aes(x = PC1, y = PC2)) +
+geom_segment(data = loadings, aes(x = 0, y = 0, xend = (PC1*80), yend = (PC2*80)),
+               arrow = arrow(length = unit(5/20, "picas")),
+               color = "grey",
+               inherit.aes = FALSE, size=0.3) +
+geom_point(data = values, aes(color=Week, shape=Treatment)) + 
+  
+scale_color_manual(values = cols) +
+guides(fill = guide_legend(override.aes=list(shape=3)))+
+annotate("text", x = (loadings$PC1*80), y = (loadings$PC2*80), label = loadings$Variables, size=2) +
+stat_ellipse(aes(x = PC1, y = PC2, colour=Week), data = values, geom = "path", position = "identity", na.rm = FALSE, show.legend = NA, inherit.aes = FALSE) +
+xlab(paste0("PC1: ", round(100*(d.pcx$sdev[1]^2/sum(d.pcx$sdev^2)),1),"%")) +
+ylab(paste0("PC2: ", round(100*(d.pcx$sdev[2]^2/sum(d.pcx$sdev^2)),1),"%")) +
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+
+
+```{r}
+#writing the PCA biplot out as a PDF
+
+#pdf(file= "Biplot with week and treatment.pdf", width=6, height=4)
+
+ggplot(values, aes(x = PC1, y = PC2)) +
+
+geom_segment(data = loadings, aes(x = 0, y = 0, xend = (PC1*80), yend = (PC2*80)),
+               arrow = arrow(length = unit(5/20, "picas")),
+               color = "darkgrey",
+               inherit.aes = FALSE, size=0.3) +
+geom_point(data = values, aes(color=Week, shape=Treatment)) + 
+  
+scale_color_manual(values = cols) +
+#guides(fill = guide_legend(override.aes=list(shape=3)))+
+#annotate("text", x = (loadings$PC1*80), y = (loadings$PC2*80), label = loadings$Variables, size=2) +
+stat_ellipse(aes(x = PC1, y = PC2, colour=Week), data = values, geom = "path", position = "identity", na.rm = FALSE, inherit.aes = FALSE) +
+xlab(paste0("PC1: ", round(100*(d.pcx$sdev[1]^2/sum(d.pcx$sdev^2)),1),"%")) +
+ylab(paste0("PC2: ", round(100*(d.pcx$sdev[2]^2/sum(d.pcx$sdev^2)),1),"%")) +
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+#dev.off()
+```
+
+
+## Aggregated Barplot
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+
+#Load data
+
+counts <- read.table("cutadapt_counts.txt", 
+                     header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                     quote = "", stringsAsFactors = FALSE)
+tax <- read.table("cutadapt_tax.txt", 
+                  header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                  quote = "", stringsAsFactors = FALSE)
+tax <- select(tax, -Sequence)
+
+# Generate a relative abundance table and remove SVs accounting for < 1% of reads in every sample
+# If you care about very rare things you could lower this to 0.1% (0.001)
+props <- apply(counts, 1, function(x) {x/sum(x)})
+filt_by_props <- counts[, apply(props, 1, max) >= 0.01]
+
+
+# Create filtered data frames
+filtered_counts <- counts[rownames(filt_by_props), colnames(filt_by_props)]
+filtered_tax <- tax[colnames(filt_by_props), ]
+
+#transpose so samples as columns, SVs as rows
+t_counts<-t(filtered_counts)
+#to get rownames as genus (all same genus aggregated together)
+# or aggregate at any taxonomic level in tax
+rownames(t_counts)<-filtered_tax$Genus
+t_counts<-as.matrix(t_counts)
+t_counts_agg<-aggregate(t_counts, list(row.names(t_counts)), sum)
+
+
+#Genus name now stored in column "Group.1"
+rownames(t_counts_agg) <- t_counts_agg$Group.1
+t_counts_agg$Group.1 <- NULL
+
+#discard SVs that are a zero in at least half the samples 
+cutoff = .5
+t_counts_agg2 <- data.frame(t_counts_agg[which(apply(t_counts_agg, 1, function(x){length(which(x != 0))/length(x)}) > cutoff),]) 
+
+#If you want a specific order of samples or spaces between blocks, export this file then edit/rearrange columns in excel
+#write.table(t_counts_agg2, file="counts_agg_genus.txt", sep='\t', quote=F)
+#add columns called "blank1", "blank2", etc. that have only 0s where you want blank blocks
+#then reload the table back in as t_counts_agg
+#t_counts_agg <- read.table("counts_agg_genus.txt", header=T, sep="\t", row.names=1, comment.char="", skip=0, check.names=FALSE)
+
+#creating the actual barplot
+library(ggplot2)
+library(dplyr)
+t_counts_agg <- read.table("counts_agg_genus.txt", header=T, sep="\t", row.names=1, comment.char="", skip=0, check.names=FALSE)
+
+y <- apply(t_counts_agg, 2, function(x) { x / sum(x) } )
+#1% abundance
+abund <- 0.01
+y2 <- y[order(rowSums(y), decreasing = TRUE),]
+#check sample columns sums to 1 (100%)
+colSums(y2)
+dim(y2)
+bugnames<-rownames(y2)
+
+# WITHIN each sample, sum any <1% taxa into the remainder. This is for visual simplification
+keep.taxa.index = rownames(y2[rowMeans(y2) > abund,])
+y3 <- as.data.frame(y2) %>% 
+  filter(rownames(.) %in% keep.taxa.index) %>% 
+  sjmisc::rotate_df() %>% 
+  mutate(remainder= 1- rowSums(.)) %>%
+  sjmisc::rotate_df() %>% 
+  as.matrix(.)
+
+pal <- colorRampPalette(colors = c("steelblue3", "skyblue1", "indianred1", "mediumpurple1", "olivedrab3", "pink", "#FFED6F", "mediumorchid3", "green" , "#9999CC", "#663366", "#999966", "#9999FF", "seashell1", "skyblue1", "yellow", "red", "olivedrab3", "salmon", "#FFED6F", "mediumorchid3", "gray50", "tan1",  "aquamarine3", "#C0C0C0", "royalblue4", "mediumvioletred", "#999933", "deeppink4","wheat1", "#66CCCC", "forestgreen", "yellow4", "darkorange3"))(35)
+barplot(y3, space=0, cex.names=0.15, col=pal, las=2, legend.text = TRUE, lwd = 0.25,
+        args.legend = list(x = "topright", bty = "n", inset=c(-0.005, -0.05), cex=0.15))
+
+#if you want to make in ggplot for prettier colours, you must convert data to long form for ggplot with tidyr. First transpose so samples are rows, genera are columns
+y3t<-t(y3)
+#make the sample ID (rownames) as column 1 in the data frame
+y3t2 <- data.frame(sampleID = row.names(y3t), y3t)
+
+#convert to long format
+library(tidyr)
+y3.long2 <- pivot_longer(y3t2, cols=-1, names_to = "Genus", values_to = "Abundance")
+
+x<-y3.long2
+#lock in the (factor) order of y3.long2 otherwise ggplot will just plot in alphabetical order
+x$sampleID <- factor(x$sampleID, levels = unique(x$sampleID))
+
+ggplot(x, aes(fill=Genus, y=Abundance, x=sampleID)) + 
+    geom_bar(position="stack", stat="identity") + theme(axis.text.x=element_text(angle = -60))
+```
+
+
+```{r}
+#writing out barplot(s) to PDF
+
+#pdf(file= "Aggregated Barplot.pdf", width=6, height=4)
+
+library(ggplot2)
+library(dplyr)
+t_counts_agg <- read.table("counts_agg_genus.txt", header=T, sep="\t", row.names=1, comment.char="", skip=0, check.names=FALSE)
+
+y <- apply(t_counts_agg, 2, function(x) { x / sum(x) } )
+#1% abundance
+abund <- 0.01
+y2 <- y[order(rowSums(y), decreasing = TRUE),]
+#check sample columns sums to 1 (100%)
+colSums(y2)
+dim(y2)
+bugnames<-rownames(y2)
+
+# WITHIN each sample, sum any <1% taxa into the remainder. This is for visual simplification
+keep.taxa.index = rownames(y2[rowMeans(y2) > abund,])
+y3 <- as.data.frame(y2) %>% 
+  filter(rownames(.) %in% keep.taxa.index) %>% 
+  sjmisc::rotate_df() %>% 
+  mutate(remainder= 1- rowSums(.)) %>%
+  sjmisc::rotate_df() %>% 
+  as.matrix(.)
+
+pal <- colorRampPalette(colors = c("steelblue3", "skyblue1", "indianred1", "mediumpurple1", "olivedrab3", "pink", "#FFED6F", "mediumorchid3", "green" , "#9999CC", "#663366", "#999966", "#9999FF", "seashell1", "skyblue1", "yellow", "red", "olivedrab3", "salmon", "#FFED6F", "mediumorchid3", "gray50", "tan1",  "aquamarine3", "#C0C0C0", "royalblue4", "mediumvioletred", "#999933", "deeppink4","wheat1", "#66CCCC", "forestgreen", "yellow4", "darkorange3"))(35)
+barplot(y3, space=0, cex.names=0.15, col=pal, las=2, legend.text = TRUE, lwd = 0.25,
+        args.legend = list(x = "topright", bty = "n", inset=c(-0.005, -0.05), cex=0.15))
+
+#if you want to make in ggplot for prettier colours, you must convert data to long form for ggplot with tidyr. First transpose so samples are rows, genera are columns
+y3t<-t(y3)
+#make the sample ID (rownames) as column 1 in the data frame
+y3t2 <- data.frame(sampleID = row.names(y3t), y3t)
+
+#convert to long format
+library(tidyr)
+y3.long2 <- pivot_longer(y3t2, cols=-1, names_to = "Genus", values_to = "Abundance")
+
+x<-y3.long2
+#lock in the (factor) order of y3.long2 otherwise ggplot will just plot in alphabetical order
+x$sampleID <- factor(x$sampleID, levels = unique(x$sampleID))
+
+ggplot(x, aes(fill=Genus, y=Abundance, x=sampleID)) + 
+    geom_bar(position="stack", stat="identity") + theme(axis.text.x=element_text(angle = -60))
+#dev.off()
+```
+
+## Filtering dataset
+
+```{r}
+setwd("/Users/sophie/Desktop/Sequencing Data")
+d <- read.table("cutadapt_counts.txt", sep="\t", quote="", header=T, row.names=1)
+dim(d)
+```
+
+
+```{r}
+#transpose rows and columns 
+d <- t(d)
+dim(d)
+```
+
+
+```{r}
+d[1:5,1:5]
+```
+
+```{r}
+#check the sparsity of the dataset/number of zeros (microbiome data often has lots of zeroes)
+sum(d == 0)
+
+sum(d != 0)
+```
+
+```{r}
+#keeping only columns with >1000 reads 
+i <- (colSums(d) <=1000)
+d.s <- d[, !i]
+dim(d.s)
+
+ncol(d)-ncol(d.s)
+#no samples needed to be removed so we can continue with just d
+```
+
+```{r}
+#calculate frequency of certain taxa
+d.freq <- apply(d, 2, function(x){x/sum(x)})
+```
+
+```{r}
+#keeping sequence variants (SVs) with a frequency greater than 1% in any sample
+d.0 <- d[apply(d.freq, 1, max)>0.01,]
+dim(d.0)
+#so we went from 469 SVs to 157, this is fine for me because I am more interested in abundant taxa than rare
+```
+
+```{r}
+#keeping sequence variants (SVs) with a frequency greater than 0.01% in every sample
+d.1 <- d.s[apply(d.freq, 1, min)>0.0001,]
+dim(d.1)
+#now we only have 10 SVs left
+```
+
+
+```{r}
+#Filter by read count, keeping only SVs that have a total read count of 100 across samples
+count = 100
+d.2 <- data.frame(d.0[which(apply(d.0, 1, function(x){sum(x)}) > count),])
+dim(d.2)
+```
+
+```{r}
+#discard SVs that are a zero in at least half the samples
+cutoff = .5
+d.3 <- data.frame(d.0[which(apply(d.0, 1, function(x){length(which(x != 0))/length(x)}) > cutoff),]) 
+dim(d.3)
+```
+
+
+
+```{r}
+#remove controls 
+
+remove<-c("C6_NEG","PCR_NEG","SPIKE1")
+length(remove)
+#11
+df2<-d.3[, !names(d.3 ) %in% remove]
+dim(df2)
+```
+
+```{r}
+#filtered data 
+
+write.table(df2, file="filtered_data.txt", sep="\t", quote=F)
+```
+
+
+
