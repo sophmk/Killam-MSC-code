@@ -3,6 +3,7 @@ title: "SK Seq Data"
 author: "Sophie Killam"
 date: "2023-11-22"
 output: html_document
+Code adapted from Kait Al (https://github.com/kait-al/Microbiome_SOPs)
 ---
 
 ```{r setup, include=FALSE}
