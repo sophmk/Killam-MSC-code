@@ -1,0 +1,182 @@
+---
+title: "Permanova on Seq Data"
+author: "Sophie Killam"
+date: "2023-12-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#install.packages('devtools')
+#devtools::install_github('ggloor/CoDaSeq/CoDaSeq')
+#loading required packages
+library(compositions)
+library(zCompositions)
+library(vegan) # for permanova
+library(CoDaSeq)
+library(Maaslin2) 
+library(dplyr)
+```
+
+```{r}
+#Load data
+setwd("/Users/sophie/Desktop/Sequencing Data")
+counts <- read.table("cutadapt_counts.txt", 
+                     header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                     quote = "", stringsAsFactors = FALSE)
+tax <- read.table("cutadapt_tax.txt", 
+                  header = TRUE, row.names = 1, sep = "\t", check.names = FALSE, 
+                  quote = "", stringsAsFactors = FALSE)
+metadata<-read.table("metadata.txt", header=T, row.names = 1, sep='\t', comment.char = "")
+```
+
+```{r}
+#relative abundance table, removing SVs that account for less than 1% of the reads in the sample
+props <- apply(counts, 1, function(x) {x/sum(x)})
+filt_by_props <- counts[, apply(props, 1, max) >= 0.01] 
+```
+
+```{r}
+# Create filtered data frames
+filtered_counts <- counts[rownames(filt_by_props), colnames(filt_by_props)]
+filtered_tax <- tax[colnames(filt_by_props), ]
+filtered_meta <- metadata[rownames(filt_by_props), ]
+head(filtered_counts, 90)
+```
+
+
+
+```{r}
+#remove rows of controls/duplicates
+filt_counts<-filtered_counts %>% filter(!row_number() %in% c(1, 31, 60, 83, 84))
+filt_counts <-filt_counts[,colSums(filt_counts)>0]
+f_meta <- filtered_meta[rownames(filt_counts), ]
+
+#rename veh to a_veh in excel then re-read the table back in
+#add in artificial "interaction" columns for maaslin2
+#write.table(f_meta, file="filtmeta.txt", sep="\t", quote=F)
+##head(filt_meta, 20)
+```
+
+```{r}
+#removal of outliers
+# Can't have zeroes for downstream steps, impute them to something else logically
+# Handle this problem using cmultRepl in zCompositions package
+# Bayesian-Multiplicative replacement of count zeros
+# method="CZM" uses multiplicative simple replacement (multRepl) on the matrix of estimated probabilities
+# samples as rows 
+czm <- cmultRepl(filt_counts, label = 0, method = "CZM")
+```
+
+```{r}
+#CLR transform the data
+clr <- t(apply(czm, 1, function(x) {log(x) - mean(log(x))} ))
+```
+
+
+```{r}
+d.n0.clr <- codaSeq.clr(czm, samples.by.row=TRUE)
+pvar.all <- codaSeq.outlier(d.n0.clr)
+pvar.all$bad
+#H7T2R2 is an outlier and will be removed
+```
+
+```{r}
+#codaSeq.outlier <- function(, plot.me=TRUE, col=rgb(1,0,0,0.3)){
+```
+
+
+```{r}
+#make any changes then read table back in
+#write.table(f_meta, file="f_meta.txt", sep='\t', quote=F)
+f_meta<-read.table("f_meta.txt", header=T, row.names = 1, sep='\t', comment.char = "")
+head(f_meta, 20)
+```
+
+```{r}
+str(f_meta)
+```
+
+```{r}
+f_meta$Week <- as.factor(f_meta$Week) 
+f_meta$Treatment <- as.factor(f_meta$Treatment) 
+str(f_meta)
+```
+
+```{r}
+# Can't have zeroes for downstream steps, impute them to something else logically
+# Handle this problem using cmultRepl in zCompositions package
+# Bayesian-Multiplicative replacement of count zeros
+# method="CZM" uses multiplicative simple replacement (multRepl) on the matrix of estimated probabilities
+# samples as rows 
+czm <- cmultRepl(filt_counts, label = 0, method = "CZM")
+```
+
+```{r}
+#CLR transform the data
+clr <- t(apply(czm, 1, function(x) {log(x) - mean(log(x))} ))
+```
+
+```{r}
+#experimenting with permanova
+#Check the homogeneity condition, we want an insignificant p-value
+all_dist <- vegdist(clr, method = "euclidean")
+anova(betadisper(all_dist, f_meta$Treatment))
+```
+
+```{r}
+#Permanova for treatment
+all_permanova <- adonis2(clr ~ Treatment, data = f_meta, permuations = 999, by = NULL, method = "euclidean")
+all_permanova
+```
+
+```{r}
+anova(betadisper(all_dist, f_meta$Week))
+```
+
+```{r}
+# Permanova
+all_permanova <- adonis2(clr ~ Week, data = f_meta, permuations = 999, by = NULL, method = "euclidean")
+all_permanova
+```
+
+```{r}
+adonis2(formula = clr ~ Week, data = f_meta, method = "euclidean", by = NULL, permuations = 999)
+```
+
+```{r}
+head(f_meta, 30)
+```
+
+Initially tried it with Kait's original code and the output was maaslin_treatment_week whereas this one has an 'and' in it 
+
+```{r}
+#write.table(filtered_counts, file="filtcounts.txt", sep="\t")
+```
+
+
+```{r}
+#testing for the effect of treatment and week separately
+fit_data <- Maaslin2(czm, f_meta, 'maaslin_Feb3week1ref', transform = "none", normalization = "CLR", analysis_method = "LM", 
+			fixed_effects = c("Treatment","Week"),
+			random_effects = c("Hive"),
+			reference = c("Week,1"),
+			standardize = FALSE)
+```
+
+```{r}
+#testing for the interaction between week and treatment
+#fit_data <- Maaslin2(czm, f_meta, 'maaslin_tw_interaction', transform = "none", normalization = "CLR", analysis_method = "LM", 
+			#fixed_effects = c("Treatment_Week"),
+			#random_effects = c("Hive"),
+			#reference = c("Treatment_Week,1"),
+			#standardize = FALSE)
+```
+
+```{r}
+sessionInfo()
+```
+
